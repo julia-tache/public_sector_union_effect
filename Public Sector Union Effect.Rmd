@@ -1,0 +1,396 @@
+---
+title: "Public Sector Union Effect"
+output: html_document
+date: "2024-09-19"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load packages}
+
+library(tidyverse)
+library(reshape2)
+library(spatstat)
+library(scales)
+library(sf)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+library(pollster)
+library(extrafont)
+library(formattable)
+loadfonts(device = "win")
+
+```
+
+```{r load data}
+
+public_sector_employment_bls <- read_csv("Public Sector Employment (BLS).csv")
+cps_2014_2023 <- read_csv("cps_00003.csv")
+cps_2014_2023_ASEC <- read_csv("cps_00005.csv.gz")
+
+color_0 <- "#f79500"
+color_1 <- "#F0BD70" 
+color_2 <- "#43938A"
+color_3 <- "#2F6569"
+
+```
+
+```{r BLS - Public Sector}
+
+public_sector_employment_bls %>%
+  filter(`Public Sector Employment` != "All Sectors") %>%
+  ggplot(aes(x = Year, y =  `Number of Workers (in thousands)`, fill = factor(`Public Sector Employment`, levels = c("Federal", "State", "Local")))) +
+  geom_bar(position = "stack", stat = "identity") +
+  ggtitle("\nAfter a dip in 2020, public sector employment is steady increasing") +
+  labs(caption = "\nSource: Bureau of Labor Statistics | github: julia-tache") +
+  scale_fill_manual(values = c(color_1, color_2, color_3)) +
+  scale_x_continuous(breaks = c(2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023)) +
+  scale_y_continuous(label = scales::comma) +
+  theme(plot.background = element_rect(fill = "#F5F5F5", color = NA),
+        plot.margin = margin(0.25, 0.25, 0.25, 0.6, "cm"),
+        panel.background = element_rect(fill = "#F5F5F5", color = NA),
+        panel.grid.major = element_line(color = "light gray"),
+        panel.grid.minor = element_line(color = "#F5F5F5"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+        plot.caption = element_text(size = 10, face = "italic", hjust = 0.5),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 12, color = "black", hjust = 1),
+        axis.ticks = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "right",
+        legend.background = element_rect(fill = "#F5F5F5"),
+        text = element_text(family = "Georgia", size = 13))
+
+ggsave("public_sector_employment.png", height = 5, width = 9)
+
+```
+
+
+
+```{r CPS Core}
+
+cps_2014_2023 <- cps_2014_2023 %>%
+  mutate(ASECFLAG = ifelse(is.na(ASECFLAG), 0, ASECFLAG))
+
+cps_2014_2023_core <- cps_2014_2023 %>%
+  filter(ASECFLAG != 1) %>%
+  filter(LABFORCE == 2) # in labor force
+
+cps_sample_core_demo_2023 <- cps_2014_2023_core %>%
+  filter(YEAR == 2023) %>%
+  filter(RACE != 999) %>%
+  filter(SEX != 9) %>%
+  mutate(RACE = case_when(RACE == 100 ~ "White",
+                          RACE == 200 ~ "Black",
+                          RACE == 300 ~ "Two or More Races/Other",
+                          RACE == 650 ~ "Asian/Pacific Islander",
+                          RACE == 651 ~ "Asian/Pacific Islander",
+                          RACE == 652 ~ "Asian/Pacific Islander",
+                          RACE > 700 ~ "Two or More Races/Other")) %>%
+  mutate(HISPAN = case_when(HISPAN == 0 ~ "Not Hispanic",
+                            HISPAN == 901 ~ "N/A",
+                            HISPAN == 902 ~ "N/A",
+                            HISPAN >= 100 ~ "Hispanic")) %>%
+  mutate(SEX = case_when(SEX == 1 ~ "Male",
+                         SEX == 2 ~ "Female")) %>%
+  filter(CLASSWKR != 0) %>%
+  filter(CLASSWKR != 99) %>%
+  filter(CLASSWKR >= 14) %>% # exclude self-employed
+  filter(CLASSWKR != 26) %>% # exclude armed forces
+  filter(CLASSWKR != 29) %>% # exclude unpaid family worker
+  mutate(CLASSWKR = case_when(CLASSWKR == 20 ~ "Private Sector",
+                              CLASSWKR == 21 ~ "Private Sector",
+                              CLASSWKR == 22 ~ "Private Sector",
+                              CLASSWKR == 23 ~ "Nonprofit",
+                              CLASSWKR == 24 ~ "Public Sector",
+                              CLASSWKR == 25 ~ "Public Sector",
+                              CLASSWKR == 27 ~ "Public Sector",
+                              CLASSWKR == 28 ~ "Public Sector"))
+
+race_pub_sec_employment <- crosstab(cps_sample_core_demo_2023, RACE, CLASSWKR, WTFINL) %>%
+  select(!n)
+
+hispan_pub_sec_employment <- crosstab(cps_sample_core_demo_2023, HISPAN, CLASSWKR, WTFINL) %>%
+  filter(HISPAN != "Not Hispanic") %>%
+  select(!n) %>%
+  rename("RACE" = "HISPAN")
+
+race_pub_sec_employment <- rbind(race_pub_sec_employment, hispan_pub_sec_employment)
+
+melt(race_pub_sec_employment, id.vars = "RACE") %>%
+  mutate(labels = paste0(as.character(round(value, digits = 1)), "%")) %>%
+  ggplot(aes(x = factor(RACE, levels = c("Two or More Races/Other", "Hispanic", "Asian/Pacific Islander", "Black", "White")), y = value, fill = factor(variable, levels = c("Nonprofit", "Public Sector", "Private Sector")))) +
+  geom_bar(position = "dodge", stat = "identity") +
+  ggtitle("\nThe public sector has the highest share of Black workers") +
+  labs(subtitle = "Percentage of workers in sector of employment, by race (2023)",
+       caption = "Author's Analysis of Current Population Survey (CPS) data accessed through IPUMS | github: julia-tache") +
+  scale_fill_manual(values = c(color_3, color_2, color_1)) +
+  scale_y_continuous(label = scales::percent, expand = c(0, 0)) +
+  coord_flip() +
+  geom_text(aes(label = labels), position = position_dodge(width = 0.9), fontface = "bold", color = "white", family = "Georgia", hjust = 1, vjust = 0.3) +
+  theme(plot.background = element_rect(fill = "#F5F5F5", color = NA),
+        plot.margin = margin(0.25, 0.25, 0.25, 0.6, "cm"),
+        panel.background = element_rect(fill = "#F5F5F5", color = NA),
+        panel.grid.major = element_line(color = "#F5F5F5"),
+        panel.grid.minor = element_line(color = "#F5F5F5"),
+        plot.title = element_text(size = 18, face = "bold", hjust = -0.25),
+        plot.subtitle = element_text(hjust = 0.1),
+        plot.caption = element_text(size = 10, face = "italic", hjust = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 12),
+        axis.ticks = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "top",
+        legend.background = element_rect(fill = "#F5F5F5"),
+        text = element_text(family = "Georgia", size = 13))
+
+ggsave("race_public_sector.png", height = 6, width = 10)
+
+sex_pub_sec_employment <- crosstab(cps_sample_core_demo_2023, CLASSWKR, SEX, WTFINL) %>%
+  select(!n)
+
+melt(sex_pub_sec_employment, id.vars = "CLASSWKR") %>%
+  mutate(labels = paste0(as.character(round(value, digits = 1)), "%")) %>%
+  ggplot(aes(x = factor(CLASSWKR, levels = c("Nonprofit", "Private Sector", "Public Sector")), y = value, fill = factor(variable, levels = c("Male", "Female")))) +
+  geom_bar(position = "dodge", stat = "identity") +
+  ggtitle("\nMore women are represented in the public and\nnonprofit sectors than in the private sector") +
+  labs(subtitle = "Percentage of male and female workers by sector (2023)",
+       caption = "Author's Analysis of Current Population Survey (CPS) data accessed through IPUMS | github: julia-tache") +
+  scale_fill_manual(values = c(color_2, color_1)) +
+  scale_y_continuous(label = scales::percent, expand = c(0, 0)) +
+  coord_flip() +
+  geom_text(aes(label = labels), position = position_dodge(width = 0.9), fontface = "bold", color = "white", family = "Georgia", hjust = 1, vjust = 0.3) +
+  theme(plot.background = element_rect(fill = "#F5F5F5", color = NA),
+        plot.margin = margin(0.25, 0.25, 0.25, 0.6, "cm"),
+        panel.background = element_rect(fill = "#F5F5F5", color = NA),
+        panel.grid.major = element_line(color = "#F5F5F5"),
+        panel.grid.minor = element_line(color = "#F5F5F5"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5),
+        plot.caption = element_text(size = 10, face = "italic", hjust = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 12),
+        axis.ticks = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "top",
+        legend.background = element_rect(fill = "#F5F5F5"),
+        text = element_text(family = "Georgia", size = 13))
+
+ggsave("sex_public_sector.png", height = 6, width = 9)
+
+cps_sample_public_sector <- cps_2014_2023_core %>%
+  filter(UNION != 0) %>%
+  mutate(UNION = case_when(UNION == 1 ~ "No Union Coverage",
+                           UNION == 2 ~ "Member of Union",
+                           UNION == 3 ~ "Covered by Union (Nonmember)")) %>%
+  filter(CLASSWKR == 24 | CLASSWKR == 25 | CLASSWKR == 27 | CLASSWKR == 28) %>% # only public sector workers
+  drop_na(UNION) %>%
+  drop_na(YEAR)
+
+union_pub_sec <- crosstab(cps_sample_public_sector, YEAR, UNION, WTFINL) %>%
+  select(YEAR, `Member of Union`) %>%
+  mutate(Sector = "All Levels")
+
+cps_sample_public_sector_fed <- cps_sample_public_sector %>%
+  filter(CLASSWKR == 25)
+
+union_pub_sec_fed <- crosstab(cps_sample_public_sector_fed, YEAR, UNION, WTFINL) %>%
+  select(YEAR, `Member of Union`) %>%
+  mutate(Sector = "Federal")
+
+cps_sample_public_sector_state <- cps_sample_public_sector %>%
+  filter(CLASSWKR == 27) 
+
+union_pub_sec_state <- crosstab(cps_sample_public_sector_state, YEAR, UNION, WTFINL) %>%
+  select(YEAR, `Member of Union`) %>%
+  mutate(Sector = "State")
+
+cps_sample_public_sector_local <- cps_sample_public_sector %>%
+  filter(CLASSWKR == 28)
+
+union_pub_sec_local <- crosstab(cps_sample_public_sector_local, YEAR, UNION, WTFINL) %>%
+  select(YEAR, `Member of Union`) %>%
+  mutate(Sector = "Local")
+
+union_pub_sec_plot <- rbind(union_pub_sec, union_pub_sec_fed, union_pub_sec_state, union_pub_sec_local) %>%
+  filter(YEAR < 2024) %>%
+  mutate(labels = paste0(as.character(round(`Member of Union`, digits = 1)), "%")) %>%
+  mutate(`Member of Union` = `Member of Union` / 100)
+
+union_pub_sec_plot %>%
+  ggplot(aes(x = YEAR, y = `Member of Union`, group = factor(Sector, levels = c("All Levels", "Federal", "State", "Local")), color = factor(Sector, levels = c("All Levels", "Federal", "State", "Local")))) +
+  geom_line() +
+  geom_point(size = 2) +
+  ggtitle("The percent of public sector workers represented by\na union has decreased over the past 10 years") +
+  labs(caption = "\nAuthor's Analysis of Current Population Survey (CPS) data accessed through IPUMS | github: julia-tache") +
+  scale_color_manual(values = c(color_1, color_2, color_3, color_0)) +
+  scale_x_continuous(breaks = c(2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023)) +
+  scale_y_continuous(labels = scales::percent) +
+  geom_label(data = subset(union_pub_sec_plot, YEAR == 2014 | YEAR == 2023), aes(label = labels), size = 4, fontface = "bold", family = "Georgia", vjust = 0.5, show.legend = FALSE) +
+  theme(plot.background = element_rect(fill = "#F5F5F5", color = NA),
+        plot.margin = margin(0.25, 0.19, 0.25, 0.6, "cm"),
+        panel.background = element_rect(fill = "#F5F5F5", color = NA),
+        panel.grid.major = element_line(color = "light gray"),
+        panel.grid.minor = element_line(color = "light gray"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+        plot.caption = element_text(size = 10, face = "italic", hjust = 0.5),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 12),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 12),
+        axis.ticks = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "top",
+        legend.background = element_rect(fill = "#F5F5F5"),
+        text = element_text(family = "Georgia", size = 13))
+
+ggsave("union_public_sector.png", height = 5, width = 8)
+
+```
+
+
+
+```{r CPS ASEC}
+
+cps_2014_2023_ASEC_sample <- cps_2014_2023_ASEC %>%
+  filter(YEAR > 2017) %>%
+  filter(LABFORCE == 2) %>% # in labor force
+  filter(ASECFLAG == 1) %>%
+  filter(CLASSWKR == 24 | CLASSWKR == 25 | CLASSWKR == 27 | CLASSWKR == 28) %>% # only public sector workers
+  filter(UNION != 0) %>%
+  mutate(UNION = case_when(UNION == 1 ~ "No Union Coverage",
+                           UNION == 2 ~ "Member of Union/Covered",
+                           UNION == 3 ~ "Member of Union/Covered")) %>%
+  filter(PENSION != 0) %>%
+  mutate(PENSION = case_when(PENSION == 1 ~ "No pension plan",
+                           PENSION == 2 ~ "Not included in plan",
+                           PENSION == 3 ~ "Included in plan")) %>%
+  mutate(YEAR = YEAR - 1)
+
+cps_2014_2023_ASEC_sample %>%
+  group_by(CLASSWKR, YEAR) %>%
+  summarize(median_wage = weighted.median(INCWAGE, ASECWTH))
+
+cps_2014_2023_ASEC_sample %>%
+  group_by(YEAR, UNION) %>%
+  summarize(INCWAGE_median = weighted.median(INCWAGE, w = ASECWTH)) %>%
+  ggplot(aes(x = YEAR, y =  INCWAGE_median, fill = factor(UNION, levels = c("Member of Union/Covered", "No Union Coverage")))) +
+  geom_bar(position = "dodge", stat = "identity") +
+  ggtitle("\nPublic sector union members have higher median annual\nsalaries compared to public sector workers without a union") +
+  labs(caption = "\nAuthor's Analysis of Current Population Survey (CPS) data accessed through IPUMS | github: julia-tache") +
+  ylab("Median Annual Income") +
+  scale_fill_manual(values = c(color_1, color_2)) + 
+  scale_x_continuous(breaks = c(2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023)) +
+  scale_y_continuous(label = scales::dollar) +
+  theme(plot.background = element_rect(fill = "#F5F5F5", color = NA),
+        plot.margin = margin(0.25, 0.25, 0.25, 0.6, "cm"),
+        panel.background = element_rect(fill = "#F5F5F5", color = NA),
+        panel.grid.major = element_line(color = "light gray"),
+        panel.grid.minor = element_line(color = "#F5F5F5"),
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        plot.caption = element_text(size = 10, face = "italic", hjust = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        axis.text.y = element_text(size = 12, color = "black", hjust = 1),
+        axis.ticks = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "top",
+        legend.background = element_rect(fill = "#F5F5F5"),
+        text = element_text(family = "Georgia", size = 13))
+
+ggsave("income_public_sector.png", height = 5, width = 8)
+
+cps_2014_2023_ASEC_pension <- crosstab_3way(cps_2014_2023_ASEC_sample, YEAR, PENSION, UNION, ASECWTH) %>%
+  select(!n)
+
+cps_2014_2023_ASEC_pension_plot <- melt(cps_2014_2023_ASEC_pension, id.vars = c("YEAR", "UNION")) %>%
+  mutate(labels = paste0(as.character(round(value, digits = 1)), "%")) %>%
+  mutate(value = value / 100)
+
+cps_2014_2023_ASEC_pension_plot %>%
+  ggplot(aes(x = factor(YEAR, levels = c("2022", "2021", "2020", "2019", "2018", "2017")), y =  value, fill = factor(variable, levels = c("No pension plan", "Not included in plan", "Included in plan")))) +
+  geom_bar(position = "stack", stat = "identity") +
+  facet_wrap(~UNION) +
+  coord_flip() +
+  geom_text(data = subset(cps_2014_2023_ASEC_pension_plot, variable == "Included in plan"), aes(label = labels), position = position_stack(vjust = 0.84), size = 4, fontface = "bold", color = "white", family = "Georgia") +
+  ggtitle("\nPublic sector union members are more\nlikely to be part of a pension plan") +
+  labs(caption = "\nAuthor's Analysis of Current Population Survey (CPS) data accessed through IPUMS | github: julia-tache") +
+  ylab("Median Annual Income") +
+  scale_fill_manual(values = c(color_1, color_2, color_3)) + 
+  theme(plot.background = element_rect(fill = "#F5F5F5", color = NA),
+        plot.margin = margin(0.25, 0.25, 0.25, 0.6, "cm"),
+        panel.background = element_rect(fill = "#F5F5F5", color = NA),
+        panel.grid.major = element_line(color = "light gray"),
+        panel.grid.minor = element_line(color = "#F5F5F5"),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+        plot.caption = element_text(size = 10, face = "italic", hjust = 3),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 10),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 12, color = "black", hjust = 1),
+        axis.ticks = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "top",
+        legend.background = element_rect(fill = "#F5F5F5"),
+        text = element_text(family = "Georgia", size = 13))
+
+ggsave("pension_public_sector.png", height = 5, width = 8)
+
+cps_2014_2023_ASEC_HI <- cps_2014_2023_ASEC_sample %>%
+  filter(PAIDGH != 0) %>%
+  mutate(PAIDGH = case_when(PAIDGH == 10 ~ "No",
+                            PAIDGH == 20 ~ "Yes",
+                            PAIDGH == 21 ~ "Yes, in part",
+                            PAIDGH == 22 ~ "Yes"))
+
+cps_2014_2023_ASEC_HI_cont <- crosstab_3way(cps_2014_2023_ASEC_HI, YEAR, PAIDGH, UNION, ASECWTH) %>%
+  select(!n)
+
+cps_2014_2023_ASEC_HI_cont_plot <- melt(cps_2014_2023_ASEC_HI_cont, id.vars = c("YEAR", "UNION")) %>%
+  mutate(labels = paste0(as.character(round(value, digits = 1)), "%")) %>%
+  mutate(value = value / 100)
+
+cps_2014_2023_ASEC_HI_cont_plot %>%
+  ggplot(aes(x = factor(YEAR, levels = c("2022", "2021", "2020", "2019", "2018", "2017")), y =  value, fill = factor(variable, levels = c("Yes, in part", "Yes", "No")))) +
+  geom_bar(position = "stack", stat = "identity") +
+  facet_wrap(~UNION) +
+  coord_flip() +
+  geom_text(data = subset(cps_2014_2023_ASEC_HI_cont_plot, variable == "Yes"), aes(label = labels), size = 4, fontface = "bold", color = "white", family = "Georgia", hjust = 0.75) +
+  ggtitle("\nPublic sector union members are more likely\nto have health insurance premiums paid for in full") +
+  labs(subtitle = "Percent of workers whose employer or union paid for all, part, or none\nof the cost of premiums for an employment-based group health\ninsurance plan during the previous calendar year",
+       caption = "\nAuthor's Analysis of Current Population Survey (CPS) data accessed through IPUMS | github: julia-tache") +
+  ylab("Median Annual Income") +
+  scale_fill_manual(values = c(color_3, color_2, color_1)) + 
+  theme(plot.background = element_rect(fill = "#F5F5F5", color = NA),
+        plot.margin = margin(0.25, 0.25, 0.25, 0.6, "cm"),
+        panel.background = element_rect(fill = "#F5F5F5", color = NA),
+        panel.grid.major = element_line(color = "light gray"),
+        panel.grid.minor = element_line(color = "#F5F5F5"),
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 12, hjust = 0.5),
+        plot.caption = element_text(size = 10, face = "italic", hjust = 3),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 10),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 12, color = "black", hjust = 1),
+        axis.ticks = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "top",
+        legend.background = element_rect(fill = "#F5F5F5"),
+        text = element_text(family = "Georgia", size = 13))
+
+ggsave("health_insurance_public_sector.png", height = 6, width = 8)
+
+```
+
